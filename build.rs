@@ -148,7 +148,50 @@ fn bind_libsepol() {
         .expect("Failed to write bindings");
 }
 
+// Work around https://github.com/rust-lang/rust/issues/109717.
+fn work_around_missing_clang_rt_android_x86_64() {
+    let target_os = env::var("CARGO_CFG_TARGET_OS").expect("Missing CARGO_CFG_TARGET_OS");
+    let target_arch = env::var("CARGO_CFG_TARGET_ARCH").expect("Missing CARGO_CFG_TARGET_ARCH");
+
+    if target_os != "android" || target_arch != "x86_64" {
+        return;
+    }
+
+    let host_os = match env::consts::OS {
+        os @ ("linux" | "windows") => os,
+        "macos" => "darwin",
+        os => panic!("OS not supported by Android NDK: {os}"),
+    };
+
+    let mut dir = env::var("ANDROID_NDK_ROOT")
+        .map(PathBuf::from)
+        .expect("Missing ANDROID_NDK_ROOT");
+    dir.push("toolchains");
+    dir.push("llvm");
+    dir.push("prebuilt");
+    dir.push(format!("{host_os}-x86_64"));
+    dir.push("lib");
+    dir.push("clang");
+
+    let clang_version = dir
+        .read_dir()
+        .and_then(|mut d| d.next().transpose())
+        .expect("Failed to list clang directory")
+        .expect("Missing clang version")
+        .file_name();
+
+    dir.push(clang_version);
+    dir.push("lib");
+    dir.push("linux");
+
+    let dir = dir.into_os_string().into_string().expect("Invalid UTF-8");
+
+    println!("cargo:rustc-link-search={dir}");
+    println!("cargo:rustc-link-lib=static=clang_rt.builtins-x86_64-android");
+}
+
 fn main() {
     build_libsepol();
     bind_libsepol();
+    work_around_missing_clang_rt_android_x86_64();
 }

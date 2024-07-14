@@ -1126,11 +1126,7 @@ impl PolicyDb {
     /// reference the target type. Returns true if a change was made or false
     /// if all MLS constraints that reference the source type already reference
     /// the target type.
-    pub fn copy_constraints(
-        &mut self,
-        source_type_id: TypeId,
-        target_type_id: TypeId,
-    ) -> bool {
+    pub fn copy_constraints(&mut self, source_type_id: TypeId, target_type_id: TypeId) -> bool {
         let mut changed = false;
 
         unsafe {
