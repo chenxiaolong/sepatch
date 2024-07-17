@@ -36,9 +36,9 @@ use crate::bindings::{
     policydb_index_others, policydb_init, policydb_to_image, role_datum, sepol_handle,
     sepol_handle_create, sepol_handle_destroy, sepol_msg_set_non_variadic_callback, symtab_insert,
     type_datum, type_datum_init, AVTAB_ALLOWED, AVTAB_AUDITALLOW, AVTAB_AUDITDENY,
-    AVTAB_TRANSITION, AVTAB_XPERMS, AVTAB_XPERMS_ALLOWED, AVTAB_XPERMS_DONTAUDIT,
-    AVTAB_XPERMS_IOCTLDRIVER, AVTAB_XPERMS_IOCTLFUNCTION, CEXPR_NAMES, CEXPR_TYPE, SCOPE_DECL,
-    SYM_CLASSES, SYM_ROLES, SYM_TYPES, TYPE_ATTRIB, TYPE_TYPE,
+    AVTAB_TRANSITION, AVTAB_XPERMS, AVTAB_XPERMS_ALLOWED, AVTAB_XPERMS_AUDITALLOW,
+    AVTAB_XPERMS_DONTAUDIT, AVTAB_XPERMS_IOCTLDRIVER, AVTAB_XPERMS_IOCTLFUNCTION, CEXPR_NAMES,
+    CEXPR_TYPE, SCOPE_DECL, SYM_CLASSES, SYM_ROLES, SYM_TYPES, TYPE_ATTRIB, TYPE_TYPE,
 };
 
 /// Container for storing warning and error messages emitted during policy load
@@ -1296,6 +1296,8 @@ impl PolicyDb {
         free(node.cast());
     }
 
+    /// Set the raw permission bit for a non-xperm rule. Note that this does not
+    /// automatically invert the bit for [`AVTAB_AUDITDENY`].
     fn set_rule_raw(
         &mut self,
         source_type_id: TypeId,
@@ -1303,7 +1305,7 @@ impl PolicyDb {
         class_id: ClassId,
         perm_id: PermId,
         specified: u16,
-        add: bool,
+        value: bool,
     ) -> bool {
         if self.get_type(source_type_id).is_none() {
             panic!("{source_type_id:?} out of bounds");
@@ -1327,7 +1329,7 @@ impl PolicyDb {
 
             let old_data = (*node).datum.data;
 
-            if add {
+            if value {
                 (*node).datum.data |= 1 << (perm_id.as_raw() - 1);
             } else {
                 (*node).datum.data &= !(1 << (perm_id.as_raw() - 1));
@@ -1343,7 +1345,7 @@ impl PolicyDb {
         }
     }
 
-    /// Set the action to take when the rule is matched. All rule only exists in
+    /// Set the action to take when the rule is matched. A rule only exists in
     /// the policy if the action is not [`RuleAction::AuditDeny`].
     pub fn set_rule(
         &mut self,
@@ -1388,15 +1390,15 @@ impl PolicyDb {
         changed
     }
 
-    /// Set or remove an xperm rule. Returns true if a change was made or false
-    /// if the rule was already set appropriately.
-    pub fn set_allow_xperm(
+    /// Set or remove the ranges from an xperm rule in the specified table.
+    fn set_xperm_rule_raw(
         &mut self,
         source_type_id: TypeId,
         target_type_id: TypeId,
         class_id: ClassId,
         xperm_ranges: &[RangeInclusive<u16>],
-        add: bool,
+        specified: u16,
+        value: bool,
     ) -> io::Result<bool> {
         if self.get_type(source_type_id).is_none() {
             panic!("{source_type_id:?} out of bounds");
@@ -1410,7 +1412,7 @@ impl PolicyDb {
             source_type: source_type_id.inner().get(),
             target_type: target_type_id.inner().get(),
             target_class: class_id.inner().get(),
-            specified: AVTAB_XPERMS_ALLOWED as u16,
+            specified,
         };
 
         // The driver node's permission bits indicate whether all of each
@@ -1514,10 +1516,10 @@ impl PolicyDb {
                         let chunk_end = func_end.clamp(chunk_min, chunk_max);
 
                         if chunk_start == chunk_min && chunk_end == chunk_max {
-                            desired[i] = if add { u32::MAX } else { u32::MIN };
+                            desired[i] = if value { u32::MAX } else { u32::MIN };
                         } else {
                             for function in chunk_start..=chunk_end {
-                                xperm_set(&mut desired, function, add);
+                                xperm_set(&mut desired, function, value);
                             }
                         }
                     }
@@ -1592,6 +1594,54 @@ impl PolicyDb {
                         }
                     }
                 }
+            }
+        }
+
+        Ok(changed)
+    }
+
+    /// Set the action to take when the xperm rule is matched. A rule only
+    /// exists in the policy if the action is not [`RuleAction::AuditDeny`].
+    pub fn set_xperm_rule(
+        &mut self,
+        source_type_id: TypeId,
+        target_type_id: TypeId,
+        class_id: ClassId,
+        xperm_ranges: &[RangeInclusive<u16>],
+        action: RuleAction,
+    ) -> io::Result<bool> {
+        let (specified, insert) = match action {
+            RuleAction::AuditDeny => (AVTAB_XPERMS_ALLOWED, false),
+            RuleAction::Deny => (AVTAB_XPERMS_DONTAUDIT, true),
+            RuleAction::AuditAllow => (AVTAB_XPERMS_AUDITALLOW, true),
+            RuleAction::Allow => (AVTAB_XPERMS_ALLOWED, true),
+        };
+
+        // Add to the desired table.
+        let mut changed = self.set_xperm_rule_raw(
+            source_type_id,
+            target_type_id,
+            class_id,
+            xperm_ranges,
+            specified as u16,
+            insert,
+        )?;
+
+        // Remove from the remaining tables to guarantee consistency.
+        for remove_specified in [
+            AVTAB_XPERMS_ALLOWED,
+            AVTAB_XPERMS_AUDITALLOW,
+            AVTAB_XPERMS_DONTAUDIT,
+        ] {
+            if remove_specified != specified {
+                changed |= self.set_xperm_rule_raw(
+                    source_type_id,
+                    target_type_id,
+                    class_id,
+                    xperm_ranges,
+                    remove_specified as u16,
+                    false,
+                )?;
             }
         }
 
