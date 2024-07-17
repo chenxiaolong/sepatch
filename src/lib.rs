@@ -35,10 +35,10 @@ use crate::bindings::{
     policydb_destroy, policydb_from_image, policydb_index_classes, policydb_index_decls_wrapper,
     policydb_index_others, policydb_init, policydb_to_image, role_datum, sepol_handle,
     sepol_handle_create, sepol_handle_destroy, sepol_msg_set_non_variadic_callback, symtab_insert,
-    type_datum, type_datum_init, AVTAB_ALLOWED, AVTAB_AUDITDENY, AVTAB_TRANSITION, AVTAB_XPERMS,
-    AVTAB_XPERMS_ALLOWED, AVTAB_XPERMS_DONTAUDIT, AVTAB_XPERMS_IOCTLDRIVER,
-    AVTAB_XPERMS_IOCTLFUNCTION, CEXPR_NAMES, CEXPR_TYPE, SCOPE_DECL, SYM_CLASSES, SYM_ROLES,
-    SYM_TYPES, TYPE_ATTRIB, TYPE_TYPE,
+    type_datum, type_datum_init, AVTAB_ALLOWED, AVTAB_AUDITALLOW, AVTAB_AUDITDENY,
+    AVTAB_TRANSITION, AVTAB_XPERMS, AVTAB_XPERMS_ALLOWED, AVTAB_XPERMS_DONTAUDIT,
+    AVTAB_XPERMS_IOCTLDRIVER, AVTAB_XPERMS_IOCTLFUNCTION, CEXPR_NAMES, CEXPR_TYPE, SCOPE_DECL,
+    SYM_CLASSES, SYM_ROLES, SYM_TYPES, TYPE_ATTRIB, TYPE_TYPE,
 };
 
 /// Container for storing warning and error messages emitted during policy load
@@ -477,6 +477,20 @@ where
     }
 
     result
+}
+
+/// The action to take when a rule is matched.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RuleAction {
+    /// Deny the action and log the denial. This is the default behavior and is
+    /// represented in the binary policy as the absence of a rule.
+    AuditDeny,
+    /// Deny the action silently.
+    Deny,
+    /// Allow the action, but log it.
+    AuditAllow,
+    /// Allow the action silently.
+    Allow,
 }
 
 /// Main type for manipulating a binary SELinux policy.
@@ -1187,6 +1201,16 @@ impl PolicyDb {
         }
     }
 
+    /// The default value for [`avtab_datum::data`] based on
+    /// [`avtab_key::specified`].
+    fn default_node_data(specified: u16) -> u32 {
+        if u32::from(specified) & AVTAB_AUDITDENY != 0 {
+            !0
+        } else {
+            0
+        }
+    }
+
     /// Find or create an avtab node. This does not take ownership of either
     /// input parameter. Returns the pointer to the avtab struct and whether it
     /// was newly created.
@@ -1223,11 +1247,7 @@ impl PolicyDb {
         if node.is_null() {
             // avtab makes a copy of all data passed to it on insert.
             let mut datum = avtab_datum {
-                data: if u32::from((*key).specified) == AVTAB_AUDITDENY {
-                    !0
-                } else {
-                    0
-                },
+                data: Self::default_node_data((*key).specified),
                 xperms,
             };
 
@@ -1276,14 +1296,13 @@ impl PolicyDb {
         free(node.cast());
     }
 
-    /// Set or remove an avtab rule. Returns true if a change was made or false
-    /// if the rule was already set appropriately.
-    pub fn set_allow(
+    fn set_rule_raw(
         &mut self,
         source_type_id: TypeId,
         target_type_id: TypeId,
         class_id: ClassId,
         perm_id: PermId,
+        specified: u16,
         add: bool,
     ) -> bool {
         if self.get_type(source_type_id).is_none() {
@@ -1300,11 +1319,11 @@ impl PolicyDb {
             source_type: source_type_id.inner().get(),
             target_type: target_type_id.inner().get(),
             target_class: class_id.inner().get(),
-            specified: AVTAB_ALLOWED as u16,
+            specified,
         };
 
         unsafe {
-            let (node, created) = self.find_or_create_avtab_node(&mut key, ptr::null_mut());
+            let (node, mut created) = self.find_or_create_avtab_node(&mut key, ptr::null_mut());
 
             let old_data = (*node).datum.data;
 
@@ -1314,8 +1333,59 @@ impl PolicyDb {
                 (*node).datum.data &= !(1 << (perm_id.as_raw() - 1));
             }
 
-            created || (*node).datum.data != old_data
+            created |= (*node).datum.data != old_data;
+
+            if (*node).datum.data == Self::default_node_data(specified) {
+                self.remove_avtab_node(node);
+            }
+
+            created
         }
+    }
+
+    /// Set the action to take when the rule is matched. All rule only exists in
+    /// the policy if the action is not [`RuleAction::AuditDeny`].
+    pub fn set_rule(
+        &mut self,
+        source_type_id: TypeId,
+        target_type_id: TypeId,
+        class_id: ClassId,
+        perm_id: PermId,
+        action: RuleAction,
+    ) -> bool {
+        let (specified, insert) = match action {
+            RuleAction::AuditDeny => (AVTAB_ALLOWED, false),
+            RuleAction::Deny => (AVTAB_AUDITDENY, false),
+            RuleAction::AuditAllow => (AVTAB_AUDITALLOW, true),
+            RuleAction::Allow => (AVTAB_ALLOWED, true),
+        };
+
+        // Add to the desired table.
+        let mut changed = self.set_rule_raw(
+            source_type_id,
+            target_type_id,
+            class_id,
+            perm_id,
+            specified as u16,
+            insert,
+        );
+
+        // Remove from the remaining tables to guarantee consistency.
+        for remove_specified in [AVTAB_ALLOWED, AVTAB_AUDITALLOW, AVTAB_AUDITDENY] {
+            if remove_specified != specified {
+                changed |= self.set_rule_raw(
+                    source_type_id,
+                    target_type_id,
+                    class_id,
+                    perm_id,
+                    remove_specified as u16,
+                    // 0 is the default state in every table besides auditdeny.
+                    remove_specified == AVTAB_AUDITDENY,
+                );
+            }
+        }
+
+        changed
     }
 
     /// Set or remove an xperm rule. Returns true if a change was made or false
