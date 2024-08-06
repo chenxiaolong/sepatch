@@ -14,7 +14,7 @@ mod bindings;
 use core::slice;
 use std::{
     ffi::{c_char, c_void, CStr, CString},
-    io::{self, Read, Write},
+    io,
     iter::FlatMap,
     marker::PhantomData,
     mem::{self, MaybeUninit},
@@ -497,10 +497,10 @@ pub enum RuleAction {
 pub struct PolicyDb(Box<policydb>);
 
 impl PolicyDb {
-    /// Parse binary SELinux policy from a reader. If warnings or errors are
-    /// emitted, they are written to `messages`. Warnings may be emitted even if
-    /// the binary policy is successfully parsed.
-    pub fn from_reader(mut reader: impl Read, messages: &mut Vec<String>) -> io::Result<Self> {
+    /// Parse a binary SELinux policy. If warnings or errors are emitted, they
+    /// are written to `messages`. Warnings may be emitted even if the binary
+    /// policy is successfully parsed.
+    pub fn from_raw(data: &[u8], messages: &mut Vec<String>) -> io::Result<Self> {
         unsafe {
             // Boxed because policydb has self-referential pointers.
             let mut pdb = Box::<policydb>::new(mem::zeroed());
@@ -509,16 +509,11 @@ impl PolicyDb {
                 panic!("Failed to initialize policydb");
             }
 
-            // Just read the whole thing to memory. libsepol's file load feature
-            // only supports <stdio.h>'s FILE and policy files are very small,
-            // so it's not worth mmap'ing the data.
-            let mut data = Vec::new();
-            reader.read_to_end(&mut data)?;
-
             let handle = MessageHandle::new();
             let ret = policydb_from_image(
                 handle.handle,
-                data.as_mut_ptr().cast(),
+                // This does not get mutated.
+                data.as_ptr().cast_mut().cast(),
                 data.len(),
                 pdb.as_mut(),
             );
@@ -538,23 +533,21 @@ impl PolicyDb {
         }
     }
 
-    /// Write binary SELinux policy to a writer. This is guaranteed to write the
-    /// entire data in a single [`Write::write`] call, which allows this to be
-    /// used for loading a policy into the kernel via `/sys/fs/selinux/load`.
-    /// If warnings or errors are emitted, they are written to `messages`.
-    /// Warnings may be emitted even if the binary policy is successfully
-    /// written.
-    #[allow(clippy::wrong_self_convention)]
-    pub fn to_writer(
-        &mut self,
-        mut writer: impl Write,
-        messages: &mut Vec<String>,
-    ) -> io::Result<()> {
+    /// Write a binary SELinux policy. If warnings or errors are emitted, they
+    /// are written to `messages`. Warnings may be emitted even if the binary
+    /// policy is successfully written.
+    pub fn to_raw(&self, messages: &mut Vec<String>) -> io::Result<Vec<u8>> {
         let handle = MessageHandle::new();
         let mut buf = CBuf::new();
 
         let ret = unsafe {
-            policydb_to_image(handle.handle, self.0.as_mut(), &mut buf.data, &mut buf.len)
+            policydb_to_image(
+                handle.handle,
+                // This does not get mutated.
+                self.0.as_ref() as *const _ as *mut _,
+                &mut buf.data,
+                &mut buf.len,
+            )
         };
 
         messages.extend(handle.into_vec());
@@ -568,15 +561,7 @@ impl PolicyDb {
 
         let data = unsafe { slice::from_raw_parts(buf.data as *const u8, buf.len) };
 
-        // /sys/fs/selinux/load requires the entire policy to be written in a
-        // single write(2) call.
-        // See: http://marc.info/?l=selinux&m=141882521027239&w=2
-        let n = writer.write(data)?;
-        if n != data.len() {
-            return Err(io::ErrorKind::UnexpectedEof.into());
-        }
-
-        Ok(())
+        Ok(data.to_vec())
     }
 
     /// SELinux binary policy version number.
