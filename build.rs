@@ -135,6 +135,7 @@ fn bind_libsepol() {
         .allowlist_type("policydb")
         .allowlist_var("AVTAB_.*")
         .allowlist_var("CEXPR_.*")
+        .allowlist_var("POLICYDB_VERSION_.*")
         .allowlist_var("SCOPE_.*")
         .allowlist_var("SYM_.*")
         .allowlist_var("TYPE_.*")

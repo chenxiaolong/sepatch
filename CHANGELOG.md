@@ -1,3 +1,7 @@
+### Unreleased
+
+* Only allow setting xperm rules if the policy version supports it
+
 ### Version 0.3.0
 
 * Use byte arrays instead of Read/Write traits when parsing and writing policies

@@ -38,7 +38,8 @@ use crate::bindings::{
     type_datum, type_datum_init, AVTAB_ALLOWED, AVTAB_AUDITALLOW, AVTAB_AUDITDENY,
     AVTAB_TRANSITION, AVTAB_XPERMS, AVTAB_XPERMS_ALLOWED, AVTAB_XPERMS_AUDITALLOW,
     AVTAB_XPERMS_DONTAUDIT, AVTAB_XPERMS_IOCTLDRIVER, AVTAB_XPERMS_IOCTLFUNCTION, CEXPR_NAMES,
-    CEXPR_TYPE, SCOPE_DECL, SYM_CLASSES, SYM_ROLES, SYM_TYPES, TYPE_ATTRIB, TYPE_TYPE,
+    CEXPR_TYPE, POLICYDB_VERSION_XPERMS_IOCTL, SCOPE_DECL, SYM_CLASSES, SYM_ROLES, SYM_TYPES,
+    TYPE_ATTRIB, TYPE_TYPE,
 };
 
 /// Container for storing warning and error messages emitted during policy load
@@ -1391,6 +1392,16 @@ impl PolicyDb {
             panic!("{target_type_id:?} out of bounds");
         } else if self.get_class(class_id).is_none() {
             panic!("{class_id:?} out of bounds");
+        }
+
+        if self.0.policyvers < POLICYDB_VERSION_XPERMS_IOCTL {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "Policy version does not support xperms: {}",
+                    self.0.policyvers
+                ),
+            ));
         }
 
         let mut key = avtab_key {
