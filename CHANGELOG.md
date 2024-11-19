@@ -1,4 +1,4 @@
-### Unreleased
+### Version 0.3.1
 
 * Only allow setting xperm rules if the policy version supports it
 * Update dependencies
