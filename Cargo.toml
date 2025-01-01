@@ -10,5 +10,5 @@ libc = "0.2.155"
 num-traits = "0.2.19"
 
 [build-dependencies]
-bindgen = "0.70.1"
+bindgen = "0.71.1"
 cc = { version = "1.0.99", features = ["jobserver", "parallel"] }
