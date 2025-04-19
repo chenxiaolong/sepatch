@@ -1,4 +1,4 @@
-### Unreleased
+### Version 0.3.3
 
 * Update selinux to 6f8f496eabd35f28dfa6b4be5fc82e325e1df620 to fix compilation with C23
 * Update dependencies
