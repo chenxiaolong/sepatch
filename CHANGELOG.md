@@ -1,3 +1,7 @@
+### Version 0.4.0
+
+* Update selinux to android-16.0.0_r4 (Android 16 QPR2)
+
 ### Version 0.3.3
 
 * Update selinux to 6f8f496eabd35f28dfa6b4be5fc82e325e1df620 to fix compilation with C23

@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2014-2024 Andrew Gunnerson
+// SPDX-FileCopyrightText: 2014-2025 Andrew Gunnerson
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // Based on DualBootPatcher and Custota code.
 
@@ -13,7 +13,7 @@ mod bindings;
 
 use core::slice;
 use std::{
-    ffi::{c_char, c_void, CStr, CString},
+    ffi::{CStr, CString, c_char, c_void},
     io,
     iter::FlatMap,
     marker::PhantomData,
@@ -27,19 +27,19 @@ use libc::{free, malloc, reallocarray, strdup};
 use num_traits::PrimInt;
 
 use crate::bindings::{
-    avtab_datum, avtab_extended_perms, avtab_hash_wrapper, avtab_insert, avtab_insert_nonunique,
-    avtab_key, avtab_node, avtab_ptr_t, avtab_search_node, avtab_search_node_next, class_datum,
-    ebitmap, ebitmap_cpy, ebitmap_destroy, ebitmap_get_bit, ebitmap_init_wrapper,
-    ebitmap_next_wrapper, ebitmap_node, ebitmap_node_get_bit_wrapper, ebitmap_set_bit,
-    ebitmap_start_wrapper, hashtab_search, msg_non_variadic_callback_data, perm_datum, policydb,
-    policydb_destroy, policydb_from_image, policydb_index_classes, policydb_index_decls_wrapper,
-    policydb_index_others, policydb_init, policydb_to_image, role_datum, sepol_handle,
-    sepol_handle_create, sepol_handle_destroy, sepol_msg_set_non_variadic_callback, symtab_insert,
-    type_datum, type_datum_init, AVTAB_ALLOWED, AVTAB_AUDITALLOW, AVTAB_AUDITDENY,
-    AVTAB_TRANSITION, AVTAB_XPERMS, AVTAB_XPERMS_ALLOWED, AVTAB_XPERMS_AUDITALLOW,
-    AVTAB_XPERMS_DONTAUDIT, AVTAB_XPERMS_IOCTLDRIVER, AVTAB_XPERMS_IOCTLFUNCTION, CEXPR_NAMES,
-    CEXPR_TYPE, POLICYDB_VERSION_XPERMS_IOCTL, SCOPE_DECL, SYM_CLASSES, SYM_ROLES, SYM_TYPES,
-    TYPE_ATTRIB, TYPE_TYPE,
+    AVTAB_ALLOWED, AVTAB_AUDITALLOW, AVTAB_AUDITDENY, AVTAB_TRANSITION, AVTAB_XPERMS,
+    AVTAB_XPERMS_ALLOWED, AVTAB_XPERMS_AUDITALLOW, AVTAB_XPERMS_DONTAUDIT,
+    AVTAB_XPERMS_IOCTLDRIVER, AVTAB_XPERMS_IOCTLFUNCTION, CEXPR_NAMES, CEXPR_TYPE,
+    POLICYDB_VERSION_XPERMS_IOCTL, SCOPE_DECL, SYM_CLASSES, SYM_ROLES, SYM_TYPES, TYPE_ATTRIB,
+    TYPE_TYPE, avtab_datum, avtab_extended_perms, avtab_hash_wrapper, avtab_insert,
+    avtab_insert_nonunique, avtab_key, avtab_node, avtab_ptr_t, avtab_search_node,
+    avtab_search_node_next, class_datum, ebitmap, ebitmap_cpy, ebitmap_destroy, ebitmap_get_bit,
+    ebitmap_init_wrapper, ebitmap_next_wrapper, ebitmap_node, ebitmap_node_get_bit_wrapper,
+    ebitmap_set_bit, ebitmap_start_wrapper, hashtab_search, msg_non_variadic_callback_data,
+    perm_datum, policydb, policydb_destroy, policydb_from_image, policydb_index_classes,
+    policydb_index_decls_wrapper, policydb_index_others, policydb_init, policydb_to_image,
+    role_datum, sepol_handle, sepol_handle_create, sepol_handle_destroy,
+    sepol_msg_set_non_variadic_callback, symtab_insert, type_datum, type_datum_init,
 };
 
 /// Container for storing warning and error messages emitted during policy load
@@ -84,11 +84,13 @@ impl MessageHandle {
         _handle: *mut sepol_handle,
         msg: *const c_char,
     ) {
-        let mh = varg as *mut Self;
-        let msg = CStr::from_ptr(msg);
-        (*mh)
-            .messages
-            .push(msg.to_str().unwrap_or_default().to_owned());
+        unsafe {
+            let mh = varg as *mut Self;
+            let msg = CStr::from_ptr(msg);
+            (*mh)
+                .messages
+                .push(msg.to_str().unwrap_or_default().to_owned());
+        }
     }
 
     pub fn into_vec(mut self) -> Vec<String> {
@@ -135,12 +137,12 @@ struct BitmapRef(PhantomData<()>);
 impl BitmapRef {
     #[inline]
     unsafe fn from_ptr<'a>(ptr: *const ebitmap) -> &'a Self {
-        &*ptr.cast()
+        unsafe { &*ptr.cast() }
     }
 
     #[inline]
     unsafe fn from_mut_ptr<'a>(ptr: *mut ebitmap) -> &'a mut Self {
-        &mut *ptr.cast()
+        unsafe { &mut *ptr.cast() }
     }
 
     #[inline]
@@ -164,7 +166,7 @@ impl BitmapRef {
     }
 
     /// Create a iterator that yields all values in the bitmap.
-    pub fn iter(&self) -> BitmapIter {
+    pub fn iter(&self) -> BitmapIter<'_> {
         BitmapIter::new(self)
     }
 }
@@ -465,13 +467,12 @@ where
     for section in sections {
         if section.start() >= section.end() {
             continue;
-        } else if let Some(last) = result.last_mut() {
-            if section.start() <= last.end()
-                || (*section.start()).checked_sub(last.end()) == Some(T::one())
-            {
-                *last = *last.start()..=*last.end().max(section.end());
-                continue;
-            }
+        } else if let Some(last) = result.last_mut()
+            && (section.start() <= last.end()
+                || (*section.start()).checked_sub(last.end()) == Some(T::one()))
+        {
+            *last = *last.start()..=*last.end().max(section.end());
+            continue;
         }
 
         result.push(section);
@@ -1205,81 +1206,85 @@ impl PolicyDb {
         key: *mut avtab_key,
         xperms: *mut avtab_extended_perms,
     ) -> (avtab_ptr_t, bool) {
-        let mut node = avtab_search_node(&mut self.0.te_avtab, key);
+        unsafe {
+            let mut node = avtab_search_node(&mut self.0.te_avtab, key);
 
-        if u32::from((*key).specified) & AVTAB_XPERMS != 0 {
-            let mut found = false;
+            if u32::from((*key).specified) & AVTAB_XPERMS != 0 {
+                let mut found = false;
 
-            while !node.is_null() {
-                let node_xperms = (*node).datum.xperms;
+                while !node.is_null() {
+                    let node_xperms = (*node).datum.xperms;
 
-                if (*node_xperms).specified == (*xperms).specified
-                    && (*node_xperms).driver == (*xperms).driver
-                {
-                    found = true;
-                    break;
+                    if (*node_xperms).specified == (*xperms).specified
+                        && (*node_xperms).driver == (*xperms).driver
+                    {
+                        found = true;
+                        break;
+                    }
+
+                    node = avtab_search_node_next(node, (*key).specified.into());
                 }
 
-                node = avtab_search_node_next(node, (*key).specified.into());
+                if !found {
+                    node = ptr::null_mut();
+                }
             }
 
-            if !found {
-                node = ptr::null_mut();
-            }
-        }
+            let mut created = false;
 
-        let mut created = false;
-
-        if node.is_null() {
-            // avtab makes a copy of all data passed to it on insert.
-            let mut datum = avtab_datum {
-                data: Self::default_node_data((*key).specified),
-                xperms,
-            };
-
-            node = avtab_insert_nonunique(&mut self.0.te_avtab, key, &mut datum);
             if node.is_null() {
-                panic!("Failed to insert avtab entry");
+                // avtab makes a copy of all data passed to it on insert.
+                let mut datum = avtab_datum {
+                    data: Self::default_node_data((*key).specified),
+                    xperms,
+                };
+
+                node = avtab_insert_nonunique(&mut self.0.te_avtab, key, &mut datum);
+                if node.is_null() {
+                    panic!("Failed to insert avtab entry");
+                }
+
+                created = true;
             }
 
-            created = true;
+            (node, created)
         }
-
-        (node, created)
     }
 
     /// Remove an avtab node. Since the input is a pointer to a node, this will
     /// panic if the node is not found in the policy.
     unsafe fn remove_avtab_node(&mut self, node: *mut avtab_node) {
-        let hash = avtab_hash_wrapper(&mut (*node).key, self.0.te_avtab.mask);
+        unsafe {
+            let hash = avtab_hash_wrapper(&mut (*node).key, self.0.te_avtab.mask);
 
-        let bucket = self.0.te_avtab.htable.add(hash as usize);
-        let mut prev = ptr::null_mut();
-        let mut cur = *bucket;
+            let bucket = self.0.te_avtab.htable.add(hash as usize);
+            let mut prev = ptr::null_mut();
+            let mut cur = *bucket;
 
-        while !cur.is_null() {
-            if cur == node {
-                break;
+            while !cur.is_null() {
+                if cur == node {
+                    break;
+                }
+                prev = cur;
+                cur = (*cur).next;
             }
-            prev = cur;
-            cur = (*cur).next;
+
+            if cur.is_null() {
+                // Data structures are corrupt.
+                panic!("Node does not exist in avtab");
+            }
+
+            if !prev.is_null() {
+                (*prev).next = (*node).next;
+            } else {
+                *bucket = (*node).next;
+            }
+
+            self.0.te_avtab.nel -= 1;
+
+            free((*node).datum.xperms.cast());
+            free(node.cast());
         }
-
-        if cur.is_null() {
-            // Data structures are corrupt.
-            panic!("Node does not exist in avtab");
-        }
-
-        if !prev.is_null() {
-            (*prev).next = (*node).next;
-        } else {
-            *bucket = (*node).next;
-        }
-
-        self.0.te_avtab.nel -= 1;
-
-        free((*node).datum.xperms.cast());
-        free(node.cast());
     }
 
     /// Set the raw permission bit for a non-xperm rule. Note that this does not
@@ -1455,7 +1460,7 @@ impl PolicyDb {
                         return Err(io::Error::new(
                             io::ErrorKind::InvalidData,
                             format!("Unknown xperms specified value: {}", (*xperms).specified),
-                        ))
+                        ));
                     }
                 }
 

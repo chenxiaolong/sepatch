@@ -55,6 +55,7 @@ fn build_libsepol() {
         .file("external/selinux/libsepol/cil/src/cil_build_ast.c")
         .file("external/selinux/libsepol/cil/src/cil.c")
         .file("external/selinux/libsepol/cil/src/cil_copy_ast.c")
+        .file("external/selinux/libsepol/cil/src/cil_deny.c")
         .file("external/selinux/libsepol/cil/src/cil_find.c")
         .file("external/selinux/libsepol/cil/src/cil_fqn.c")
         // .file("external/selinux/libsepol/cil/src/cil_lexer.l")
@@ -109,6 +110,7 @@ fn build_libsepol() {
         .flag("-Wno-missing-declarations")
         .flag("-Wno-missing-prototypes")
         .flag_if_supported("-Wno-calloc-transposed-args")
+        .flag("-Wno-unused-function")
         .compile("sepol");
 }
 

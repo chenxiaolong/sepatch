@@ -2,7 +2,7 @@
 name = "sepatch"
 version = "0.3.3"
 license = "LGPL-2.1-or-later"
-edition = "2021"
+edition = "2024"
 publish = false
 
 [dependencies]
@@ -10,5 +10,5 @@ libc = "0.2.155"
 num-traits = "0.2.19"
 
 [build-dependencies]
-bindgen = "0.71.1"
+bindgen = "0.72.1"
 cc = { version = "1.0.99", features = ["jobserver", "parallel"] }
