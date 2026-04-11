@@ -1,6 +1,6 @@
 [package]
 name = "sepatch"
-version = "0.3.3"
+version = "0.4.1"
 license = "LGPL-2.1-or-later"
 edition = "2024"
 publish = false

@@ -1,3 +1,8 @@
+### Version 0.4.1
+
+* Fix version number of crate
+* Update dependencies
+
 ### Version 0.4.0
 
 * Update selinux to android-16.0.0_r4 (Android 16 QPR2)
