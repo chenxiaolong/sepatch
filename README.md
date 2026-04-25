@@ -6,4 +6,4 @@ sepatch is a high-level wrapper library around libsepol for manipulating binary 
 
 ## License
 
-sepatch is licensed under LGPLv2.1+, the same license as the bundled libsepol library. Please see [`LICENSE`](./LICENSE) for the full license text.
+sepatch is licensed under LGPL-2.1-or-later, the same license as the bundled libsepol library. Please see [`LICENSE`](./LICENSE) for the full license text.
