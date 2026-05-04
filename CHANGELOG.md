@@ -1,4 +1,4 @@
-### Unreleased
+### Version 0.5.0
 
 * Add support for copying type transition rules
 * Use hashmap to translate types in `copy_avtab_rules()`
