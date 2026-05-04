@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2014-2025 Andrew Gunnerson
+// SPDX-FileCopyrightText: 2014-2026 Andrew Gunnerson
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // Based on DualBootPatcher and Custota code.
 
@@ -13,6 +13,7 @@ mod bindings;
 
 use core::slice;
 use std::{
+    collections::HashMap,
     ffi::{CStr, CString, c_char, c_void},
     io,
     iter::FlatMap,
@@ -35,11 +36,12 @@ use crate::bindings::{
     avtab_insert_nonunique, avtab_key, avtab_node, avtab_ptr_t, avtab_search_node,
     avtab_search_node_next, class_datum, ebitmap, ebitmap_cpy, ebitmap_destroy, ebitmap_get_bit,
     ebitmap_init_wrapper, ebitmap_next_wrapper, ebitmap_node, ebitmap_node_get_bit_wrapper,
-    ebitmap_set_bit, ebitmap_start_wrapper, hashtab_search, msg_non_variadic_callback_data,
-    perm_datum, policydb, policydb_destroy, policydb_from_image, policydb_index_classes,
-    policydb_index_decls_wrapper, policydb_index_others, policydb_init, policydb_to_image,
-    role_datum, sepol_handle, sepol_handle_create, sepol_handle_destroy,
-    sepol_msg_set_non_variadic_callback, symtab_insert, type_datum, type_datum_init,
+    ebitmap_set_bit, ebitmap_start_wrapper, filename_trans_datum, filename_trans_key,
+    hashtab_insert, hashtab_search, msg_non_variadic_callback_data, perm_datum, policydb,
+    policydb_destroy, policydb_from_image, policydb_index_classes, policydb_index_decls_wrapper,
+    policydb_index_others, policydb_init, policydb_to_image, role_datum, sepol_handle,
+    sepol_handle_create, sepol_handle_destroy, sepol_msg_set_non_variadic_callback, symtab_insert,
+    type_datum, type_datum_init,
 };
 
 /// Container for storing warning and error messages emitted during policy load
@@ -131,7 +133,6 @@ impl Drop for CBuf {
     }
 }
 
-/// An immutable reference to an ebitmap.
 struct BitmapRef(PhantomData<()>);
 
 impl BitmapRef {
@@ -155,12 +156,16 @@ impl BitmapRef {
         self as *mut _ as *mut _
     }
 
+    pub fn get(&self, bit: u32) -> bool {
+        unsafe { ebitmap_get_bit(self.as_ptr(), bit) != 0 }
+    }
+
     /// Add a value to the bitmap. This will panic if C memory allocation fails.
     /// This is a no-op if the value already exists in the bitmap.
-    pub fn insert(&mut self, value: u32) {
+    pub fn set(&mut self, bit: u32, value: bool) {
         unsafe {
-            if ebitmap_set_bit(self.as_mut_ptr(), value, 1) != 0 {
-                panic!("Failed to insert {value}");
+            if ebitmap_set_bit(self.as_mut_ptr(), bit, value.into()) != 0 {
+                panic!("Failed to insert {bit}");
             }
         }
     }
@@ -346,7 +351,7 @@ impl<T: RawId> IdSet<T> {
     /// Add a value to the set. This will panic if C memory allocation fails.
     /// This is a no-op if the value already exists in the set.
     pub fn insert(&mut self, value: T) {
-        self.inner.insert(value.as_raw());
+        self.inner.set(value.as_raw(), true);
     }
 
     /// Create a iterator that yields all values in the set.
@@ -384,7 +389,7 @@ type IdSetIntoIter<T> = FlatMap<BitmapIntoIter, Option<T>, fn(u32) -> Option<T>>
 
 macro_rules! define_id_wrapper {
     ($name:ident, $nztype:ident) => {
-        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
         #[repr(transparent)]
         pub struct $name($nztype);
 
@@ -1654,23 +1659,25 @@ impl PolicyDb {
     pub fn set_type_trans(
         &mut self,
         source_type_id: TypeId,
-        target_type_id: TypeId,
+        file_type_id: TypeId,
         class_id: ClassId,
         default_type_id: Option<TypeId>,
     ) -> bool {
         if self.get_type(source_type_id).is_none() {
             panic!("{source_type_id:?} out of bounds");
-        } else if self.get_type(target_type_id).is_none() {
-            panic!("{target_type_id:?} out of bounds");
+        } else if self.get_type(file_type_id).is_none() {
+            panic!("{file_type_id:?} out of bounds");
         } else if self.get_class(class_id).is_none() {
             panic!("{class_id:?} out of bounds");
-        } else if default_type_id.and_then(|t| self.get_type(t)).is_none() {
-            panic!("{default_type_id:?} out of bounds");
+        } else if let Some(t) = default_type_id
+            && self.get_type(t).is_none()
+        {
+            panic!("{t:?} out of bounds");
         }
 
         let mut key = avtab_key {
             source_type: source_type_id.inner().get(),
-            target_type: target_type_id.inner().get(),
+            target_type: file_type_id.inner().get(),
             target_class: class_id.inner().get(),
             specified: AVTAB_TRANSITION as u16,
         };
@@ -1709,6 +1716,125 @@ impl PolicyDb {
         }
     }
 
+    /// Set or remove a filename type transition rule. Returns true if a change
+    /// was made or false if the rule was already set appropriately.
+    pub fn set_filename_trans(
+        &mut self,
+        source_type_id: TypeId,
+        file_type_id: TypeId,
+        class_id: ClassId,
+        filename: &[u8],
+        trans_type_id: Option<TypeId>,
+    ) -> bool {
+        if self.get_type(source_type_id).is_none() {
+            panic!("{source_type_id:?} out of bounds");
+        } else if self.get_type(file_type_id).is_none() {
+            panic!("{file_type_id:?} out of bounds");
+        } else if self.get_class(class_id).is_none() {
+            panic!("{class_id:?} out of bounds");
+        } else if let Some(t) = trans_type_id
+            && self.get_type(t).is_none()
+        {
+            panic!("{t:?} out of bounds");
+        }
+
+        let Ok(filename_c) = CString::new(filename) else {
+            panic!("Invalid filename: {filename:?}");
+        };
+
+        let key = filename_trans_key {
+            ttype: file_type_id.inner().get().into(),
+            tclass: class_id.inner().get().into(),
+            name: filename_c.as_ptr().cast_mut(),
+        };
+
+        unsafe {
+            let mut datum = hashtab_search(self.0.filename_trans, &key as *const _ as *const _)
+                as *mut filename_trans_datum;
+            let mut last = ptr::null_mut();
+
+            while !datum.is_null() {
+                let stypes = BitmapRef::from_mut_ptr(&mut (*datum).stypes);
+
+                if let Some(t) = trans_type_id {
+                    if (*datum).otype == t.as_raw() {
+                        break;
+                    } else if stypes.get(source_type_id.as_raw() - 1) {
+                        // Transitions to the wrong type.
+                        stypes.set(source_type_id.as_raw() - 1, false);
+                        self.0.filename_trans_count -= 1;
+                    }
+                } else {
+                    // Remove existing filename transition. For simplicity, this
+                    // currently does not remove the hashtab entry if there are
+                    // no more source types in this bitset.
+                    if stypes.get(source_type_id.as_raw() - 1) {
+                        stypes.set(source_type_id.as_raw() - 1, false);
+                        self.0.filename_trans_count -= 1;
+                        return true;
+                    }
+                }
+
+                last = datum;
+                datum = (*datum).next;
+            }
+
+            let Some(trans_type_id) = trans_type_id else {
+                return false;
+            };
+
+            if datum.is_null() {
+                datum = malloc(mem::size_of::<filename_trans_datum>()).cast();
+                if datum.is_null() {
+                    panic!("Failed to allocate filename_trans_datum struct");
+                }
+
+                ebitmap_init_wrapper(&mut (*datum).stypes);
+                (*datum).otype = trans_type_id.as_raw();
+                (*datum).next = ptr::null_mut();
+
+                if !last.is_null() {
+                    (*last).next = datum;
+                } else {
+                    // hashtab_insert will take ownership of these allocations.
+                    let filename_dup = strdup(filename_c.as_ptr());
+                    if filename_dup.is_null() {
+                        free(datum.cast());
+                        panic!("Failed to allocate filename");
+                    }
+
+                    let new_key: *mut filename_trans_key =
+                        malloc(mem::size_of::<filename_trans_key>()).cast();
+                    if new_key.is_null() {
+                        free(datum.cast());
+                        free(filename_dup.cast());
+                        panic!("Failed to allocate filename_trans_key struct");
+                    }
+
+                    *new_key = key;
+                    (*new_key).name = filename_dup;
+
+                    if hashtab_insert(self.0.filename_trans, new_key.cast(), datum.cast()) != 0 {
+                        free(datum.cast());
+                        free(filename_dup.cast());
+                        free(new_key.cast());
+                        panic!("Failed to insert filename_trans entry");
+                    }
+                }
+            }
+
+            let stypes = BitmapRef::from_mut_ptr(&mut (*datum).stypes);
+
+            if stypes.get(source_type_id.as_raw() - 1) {
+                false
+            } else {
+                stypes.set(source_type_id.as_raw() - 1, true);
+                self.0.filename_trans_count += 1;
+                true
+            }
+        }
+    }
+
     /// Remove all dontaudit and dontauditxperm rules. This is primarily useful
     /// for troubleshooting and may result in significant spam in the audit
     /// logs.
@@ -1740,23 +1866,45 @@ impl PolicyDb {
     /// copied to that key. If the new key already exists, then the rules are
     /// merged. Returns whether any changes were made.
     #[allow(clippy::type_complexity)]
-    pub fn copy_avtab_rules(
-        &mut self,
-        func: Box<dyn Fn(TypeId, TypeId, ClassId) -> Option<(TypeId, TypeId, ClassId)>>,
-    ) -> io::Result<bool> {
+    pub fn copy_avtab_rules(&mut self, map: &HashMap<TypeId, TypeId>) -> io::Result<bool> {
         unsafe {
             let mut to_add = vec![];
+
+            for (from, to) in map {
+                if self.get_type(*from).is_none() {
+                    panic!("{from:?} out of bounds");
+                } else if self.get_type(*to).is_none() {
+                    panic!("{to:?} out of bounds");
+                }
+            }
 
             // Gather rules to copy.
             for i in 0..self.0.te_avtab.nslot {
                 let mut cur = *self.0.te_avtab.htable.add(i as usize);
 
                 while !cur.is_null() {
-                    if let Some((source_type_id, target_type_id, class_id)) = func(
-                        TypeId::from(NonZeroU16::new((*cur).key.source_type).unwrap()),
-                        TypeId::from(NonZeroU16::new((*cur).key.target_type).unwrap()),
-                        ClassId::from(NonZeroU16::new((*cur).key.target_class).unwrap()),
-                    ) {
+                    let source_type_id =
+                        TypeId::from(NonZeroU16::new((*cur).key.source_type).unwrap());
+                    let target_type_id =
+                        TypeId::from(NonZeroU16::new((*cur).key.target_type).unwrap());
+                    let class_id = ClassId::from(NonZeroU16::new((*cur).key.target_class).unwrap());
+
+                    let mut need_copy = false;
+
+                    let source_type_id = if let Some(t) = map.get(&source_type_id) {
+                        need_copy = true;
+                        *t
+                    } else {
+                        source_type_id
+                    };
+                    let target_type_id = if let Some(t) = map.get(&target_type_id) {
+                        need_copy = true;
+                        *t
+                    } else {
+                        target_type_id
+                    };
+
+                    if need_copy {
                         let new_key = avtab_key {
                             source_type: source_type_id.inner().get(),
                             target_type: target_type_id.inner().get(),
@@ -1815,6 +1963,91 @@ impl PolicyDb {
             }
 
             Ok(changed)
+        }
+    }
+
+    // Copy type transition rules. `map` is used to map any type in the rule to
+    // a different type. This includes the source type, file type, and target
+    // transition type.
+    pub fn copy_filename_trans_rules(&mut self, map: &HashMap<TypeId, TypeId>) -> bool {
+        unsafe {
+            let mut to_add = vec![];
+
+            for (from, to) in map {
+                if self.get_type(*from).is_none() {
+                    panic!("{from:?} out of bounds");
+                } else if self.get_type(*to).is_none() {
+                    panic!("{to:?} out of bounds");
+                }
+            }
+
+            // Gather rules to copy.
+            for bucket in 0..(*self.0.filename_trans).size {
+                let mut cur = *(*self.0.filename_trans).htable.add(bucket as usize);
+
+                while !cur.is_null() {
+                    let key = (*cur).key.cast::<filename_trans_key>();
+                    let datum = (*cur).datum.cast::<filename_trans_datum>();
+                    let stypes = BitmapRef::from_ptr(&(*datum).stypes);
+
+                    let file_type_id = TypeId::from_raw((*key).ttype).unwrap();
+                    let class_id = ClassId::from_raw((*key).tclass).unwrap();
+                    let filename = CStr::from_ptr((*key).name);
+                    let trans_type_id = TypeId::from_raw((*datum).otype).unwrap();
+
+                    let mut need_copy = false;
+
+                    let file_type_id = if let Some(t) = map.get(&file_type_id) {
+                        need_copy = true;
+                        *t
+                    } else {
+                        file_type_id
+                    };
+                    let trans_type_id = if let Some(t) = map.get(&trans_type_id) {
+                        need_copy = true;
+                        *t
+                    } else {
+                        trans_type_id
+                    };
+
+                    for stype in stypes {
+                        let source_type_id = TypeId::from_raw(stype + 1).unwrap();
+
+                        let source_type_id = if let Some(t) = map.get(&source_type_id) {
+                            need_copy = true;
+                            *t
+                        } else {
+                            source_type_id
+                        };
+
+                        if need_copy {
+                            to_add.push((
+                                source_type_id,
+                                file_type_id,
+                                class_id,
+                                filename,
+                                trans_type_id,
+                            ));
+                        }
+                    }
+
+                    cur = (*cur).next;
+                }
+            }
+
+            let mut changed = false;
+
+            for (source_type_id, file_type_id, class_id, filename, trans_type_id) in to_add {
+                changed |= self.set_filename_trans(
+                    source_type_id,
+                    file_type_id,
+                    class_id,
+                    filename.to_bytes(),
+                    Some(trans_type_id),
+                );
+            }
+
+            changed
         }
     }
 }

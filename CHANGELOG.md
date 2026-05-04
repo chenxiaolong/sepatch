@@ -1,3 +1,8 @@
+### Unreleased
+
+* Add support for copying type transition rules
+* Use hashmap to translate types in `copy_avtab_rules()`
+
 ### Version 0.4.1
 
 * Fix version number of crate

@@ -132,6 +132,7 @@ fn bind_libsepol() {
         .allowlist_function("symtab_.*")
         .allowlist_function("type_datum_.*")
         .allowlist_type(".*_datum")
+        .allowlist_type(".*_key")
         .allowlist_type("ebitmap")
         .allowlist_type("msg_non_variadic_callback_data")
         .allowlist_type("policydb")
