@@ -606,7 +606,7 @@ impl PolicyDb {
     }
 
     /// Find the role ID for the specified name.
-    pub fn get_role_id(&self, name: &str) -> Option<RoleId> {
+    pub fn get_role_id(&self, name: impl Into<Vec<u8>>) -> Option<RoleId> {
         let c_name = CString::new(name).ok()?;
 
         unsafe {
@@ -622,13 +622,26 @@ impl PolicyDb {
         }
     }
 
-    /// Get the role struct for the specified ID.
-    fn get_role(&self, id: RoleId) -> Option<NonNull<role_datum>> {
+    /// Get the role name and struct for the specified ID.
+    fn get_role(&self, id: RoleId) -> Option<(&[u8], NonNull<role_datum>)> {
         if id.as_raw() > self.0.symtab[SYM_ROLES as usize].nprim {
             return None;
         }
 
-        unsafe { NonNull::new(*self.0.role_val_to_struct.add(id.as_raw() as usize - 1)) }
+        unsafe {
+            let name = CStr::from_ptr(
+                *self.0.sym_val_to_name[SYM_ROLES as usize].add(id.as_raw() as usize - 1),
+            )
+            .to_bytes();
+
+            NonNull::new(*self.0.role_val_to_struct.add(id.as_raw() as usize - 1))
+                .map(|p| (name, p))
+        }
+    }
+
+    /// Get the role name for the specified ID.
+    pub fn get_role_name(&self, id: RoleId) -> Option<&[u8]> {
+        self.get_role(id).map(|(name, _)| name)
     }
 
     /// Get the set of all roles.
@@ -645,7 +658,7 @@ impl PolicyDb {
     }
 
     /// Find the type or attribute ID for the specified name.
-    pub fn get_type_id(&self, name: &str) -> Option<TypeId> {
+    pub fn get_type_id(&self, name: impl Into<Vec<u8>>) -> Option<TypeId> {
         let c_name = CString::new(name).ok()?;
 
         unsafe {
@@ -661,13 +674,26 @@ impl PolicyDb {
         }
     }
 
-    /// Get the type struct for the specified ID.
-    fn get_type(&self, id: TypeId) -> Option<NonNull<type_datum>> {
+    /// Get the type name and struct for the specified ID.
+    fn get_type(&self, id: TypeId) -> Option<(&[u8], NonNull<type_datum>)> {
         if id.as_raw() > self.0.symtab[SYM_TYPES as usize].nprim {
             return None;
         }
 
-        unsafe { NonNull::new(*self.0.type_val_to_struct.add(id.as_raw() as usize - 1)) }
+        unsafe {
+            let name = CStr::from_ptr(
+                *self.0.sym_val_to_name[SYM_TYPES as usize].add(id.as_raw() as usize - 1),
+            )
+            .to_bytes();
+
+            NonNull::new(*self.0.type_val_to_struct.add(id.as_raw() as usize - 1))
+                .map(|p| (name, p))
+        }
+    }
+
+    /// Get the type name for the specified ID.
+    pub fn get_type_name(&self, id: TypeId) -> Option<&[u8]> {
+        self.get_type(id).map(|(name, _)| name)
     }
 
     /// Get the set of all types and attributes.
@@ -684,7 +710,7 @@ impl PolicyDb {
     }
 
     /// Find the class ID for the specified name.
-    pub fn get_class_id(&self, name: &str) -> Option<ClassId> {
+    pub fn get_class_id(&self, name: impl Into<Vec<u8>>) -> Option<ClassId> {
         let c_name = CString::new(name).ok()?;
 
         unsafe {
@@ -700,13 +726,26 @@ impl PolicyDb {
         }
     }
 
-    /// Get the class struct for the specified ID.
-    fn get_class(&self, id: ClassId) -> Option<NonNull<class_datum>> {
+    /// Get the class name and struct for the specified ID.
+    fn get_class(&self, id: ClassId) -> Option<(&[u8], NonNull<class_datum>)> {
         if id.as_raw() > self.0.symtab[SYM_CLASSES as usize].nprim {
             return None;
         }
 
-        unsafe { NonNull::new(*self.0.class_val_to_struct.add(id.as_raw() as usize - 1)) }
+        unsafe {
+            let name = CStr::from_ptr(
+                *self.0.sym_val_to_name[SYM_CLASSES as usize].add(id.as_raw() as usize - 1),
+            )
+            .to_bytes();
+
+            NonNull::new(*self.0.class_val_to_struct.add(id.as_raw() as usize - 1))
+                .map(|p| (name, p))
+        }
+    }
+
+    /// Get the class name for the specified ID.
+    pub fn get_class_name(&self, id: ClassId) -> Option<&[u8]> {
+        self.get_class(id).map(|(name, _)| name)
     }
 
     /// Get the set of all classes.
@@ -723,8 +762,8 @@ impl PolicyDb {
     }
 
     /// Find the permission ID for the specified name within the class.
-    pub fn get_perm_id(&self, class_id: ClassId, name: &str) -> Option<PermId> {
-        let class = self.get_class(class_id)?;
+    pub fn get_perm_id(&self, class_id: ClassId, name: impl Into<Vec<u8>>) -> Option<PermId> {
+        let (_, class) = self.get_class(class_id)?;
         let c_name = CString::new(name).ok()?;
 
         unsafe {
@@ -751,9 +790,10 @@ impl PolicyDb {
         }
     }
 
-    /// Get the permission struct for the specified ID within the class.
-    fn get_perm(&self, class_id: ClassId, perm_id: PermId) -> Option<NonNull<perm_datum>> {
-        let class = self.get_class(class_id)?;
+    /// Get the permission name and struct for the specified ID within the
+    /// class.
+    fn get_perm(&self, class_id: ClassId, perm_id: PermId) -> Option<(&[u8], NonNull<perm_datum>)> {
+        let (_, class) = self.get_class(class_id)?;
 
         unsafe {
             let specific = (*class.as_ptr()).permissions.table;
@@ -775,7 +815,9 @@ impl PolicyDb {
                         let perm = (*cur).datum.cast::<perm_datum>();
 
                         if (*perm).s.value == perm_id.as_raw() {
-                            return NonNull::new(perm);
+                            let name = CStr::from_ptr((*cur).key).to_bytes();
+
+                            return NonNull::new(perm).map(|p| (name, p));
                         }
 
                         cur = (*cur).next;
@@ -787,11 +829,16 @@ impl PolicyDb {
         }
     }
 
+    /// Get the perm name for the specified ID within the class.
+    pub fn get_perm_name(&self, class_id: ClassId, perm_id: PermId) -> Option<&[u8]> {
+        self.get_perm(class_id, perm_id).map(|(name, _)| name)
+    }
+
     /// Get the set of all permissions within the class.
     pub fn all_perms(&self, class_id: ClassId) -> IdSet<PermId> {
         let mut set = IdSet::new();
 
-        let Some(class) = self.get_class(class_id) else {
+        let Some((_, class)) = self.get_class(class_id) else {
             panic!("{class_id:?} out of bounds");
         };
 
@@ -934,7 +981,7 @@ impl PolicyDb {
                 panic!("{type_id:?} out of bounds");
             }
 
-            let Some(role) = self.get_role(role_id) else {
+            let Some((_, role)) = self.get_role(role_id) else {
                 panic!("{role_id:?} out of bounds");
             };
 
@@ -969,7 +1016,7 @@ impl PolicyDb {
         for i in 1..=self.0.symtab[SYM_ROLES as usize].nprim {
             let role_id = RoleId::from(NonZeroU16::new(i as u16).unwrap());
 
-            let Some(role) = self.get_role(role_id) else {
+            let Some((_, role)) = self.get_role(role_id) else {
                 panic!("{role_id:?} out of bounds");
             };
 
@@ -995,7 +1042,7 @@ impl PolicyDb {
         value: bool,
     ) -> io::Result<bool> {
         unsafe {
-            if let Some(s) = self.get_type(type_id) {
+            if let Some((_, s)) = self.get_type(type_id) {
                 let flavor = (*s.as_ptr()).flavor;
                 if flavor != TYPE_TYPE {
                     return Err(io::Error::new(
@@ -1007,7 +1054,7 @@ impl PolicyDb {
                 panic!("{type_id:?} out of bounds");
             }
 
-            if let Some(s) = self.get_type(attr_id) {
+            if let Some((_, s)) = self.get_type(attr_id) {
                 let flavor = (*s.as_ptr()).flavor;
                 if flavor != TYPE_ATTRIB {
                     return Err(io::Error::new(

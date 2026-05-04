@@ -2,6 +2,7 @@
 
 * Add support for copying type transition rules
 * Use hashmap to translate types in `copy_avtab_rules()`
+* Add support for querying names of roles, types, classes, and permissions
 
 ### Version 0.4.1
 
