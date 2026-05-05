@@ -1909,49 +1909,40 @@ impl PolicyDb {
     }
 
     /// Copy avtab rules. For each rule, `func` will be called. If it returns a
-    /// new tuple of source type, target type, and class, then the rule will be
-    /// copied to that key. If the new key already exists, then the rules are
-    /// merged. Returns whether any changes were made.
+    /// new tuple of source type and target type, then all rules matching the
+    /// old pair will be copied for the new pair. Newly created rules are merged
+    /// with existing rules. Returns whether any changes were made.
     #[allow(clippy::type_complexity)]
-    pub fn copy_avtab_rules(&mut self, map: &HashMap<TypeId, TypeId>) -> io::Result<bool> {
+    pub fn copy_avtab_rules(
+        &mut self,
+        func: &dyn Fn(TypeId, TypeId) -> Option<(TypeId, TypeId)>,
+    ) -> io::Result<bool> {
+        let mut cache = HashMap::new();
+
+        let mut cached_func = |s: TypeId, t: TypeId| -> Option<(TypeId, TypeId)> {
+            *cache.entry((s, t)).or_insert_with(|| func(s, t))
+        };
+
         unsafe {
             let mut to_add = vec![];
-
-            for (from, to) in map {
-                if self.get_type(*from).is_none() {
-                    panic!("{from:?} out of bounds");
-                } else if self.get_type(*to).is_none() {
-                    panic!("{to:?} out of bounds");
-                }
-            }
 
             // Gather rules to copy.
             for i in 0..self.0.te_avtab.nslot {
                 let mut cur = *self.0.te_avtab.htable.add(i as usize);
 
                 while !cur.is_null() {
-                    let source_type_id =
-                        TypeId::from(NonZeroU16::new((*cur).key.source_type).unwrap());
-                    let target_type_id =
-                        TypeId::from(NonZeroU16::new((*cur).key.target_type).unwrap());
                     let class_id = ClassId::from(NonZeroU16::new((*cur).key.target_class).unwrap());
 
-                    let mut need_copy = false;
+                    if let Some((source_type_id, target_type_id)) = cached_func(
+                        TypeId::from(NonZeroU16::new((*cur).key.source_type).unwrap()),
+                        TypeId::from(NonZeroU16::new((*cur).key.target_type).unwrap()),
+                    ) {
+                        if self.get_type(source_type_id).is_none() {
+                            panic!("{source_type_id:?} out of bounds");
+                        } else if self.get_type(target_type_id).is_none() {
+                            panic!("{target_type_id:?} out of bounds");
+                        }
 
-                    let source_type_id = if let Some(t) = map.get(&source_type_id) {
-                        need_copy = true;
-                        *t
-                    } else {
-                        source_type_id
-                    };
-                    let target_type_id = if let Some(t) = map.get(&target_type_id) {
-                        need_copy = true;
-                        *t
-                    } else {
-                        target_type_id
-                    };
-
-                    if need_copy {
                         let new_key = avtab_key {
                             source_type: source_type_id.inner().get(),
                             target_type: target_type_id.inner().get(),
@@ -2013,20 +2004,24 @@ impl PolicyDb {
         }
     }
 
-    // Copy type transition rules. `map` is used to map any type in the rule to
-    // a different type. This includes the source type, file type, and target
-    // transition type.
-    pub fn copy_filename_trans_rules(&mut self, map: &HashMap<TypeId, TypeId>) -> bool {
+    // Copy filename type transition rules. For each rule, `func` will be
+    // called. If it returns a new tuple of source type, file type, and
+    // transition type, then all rules matching the old triple will be copied
+    // for the new triple. Newly created rules will overwrite old rules that
+    // conflict. Returns whether any changes were made.
+    pub fn copy_filename_trans_rules(
+        &mut self,
+        func: &dyn Fn(TypeId, TypeId, TypeId) -> Option<(TypeId, TypeId, TypeId)>,
+    ) -> bool {
+        let mut cache = HashMap::new();
+
+        let mut cached_func =
+            |s: TypeId, f: TypeId, t: TypeId| -> Option<(TypeId, TypeId, TypeId)> {
+                *cache.entry((s, f, t)).or_insert_with(|| func(s, f, t))
+            };
+
         unsafe {
             let mut to_add = vec![];
-
-            for (from, to) in map {
-                if self.get_type(*from).is_none() {
-                    panic!("{from:?} out of bounds");
-                } else if self.get_type(*to).is_none() {
-                    panic!("{to:?} out of bounds");
-                }
-            }
 
             // Gather rules to copy.
             for bucket in 0..(*self.0.filename_trans).size {
@@ -2042,32 +2037,20 @@ impl PolicyDb {
                     let filename = CStr::from_ptr((*key).name);
                     let trans_type_id = TypeId::from_raw((*datum).otype).unwrap();
 
-                    let mut need_copy = false;
-
-                    let file_type_id = if let Some(t) = map.get(&file_type_id) {
-                        need_copy = true;
-                        *t
-                    } else {
-                        file_type_id
-                    };
-                    let trans_type_id = if let Some(t) = map.get(&trans_type_id) {
-                        need_copy = true;
-                        *t
-                    } else {
-                        trans_type_id
-                    };
-
                     for stype in stypes {
                         let source_type_id = TypeId::from_raw(stype + 1).unwrap();
 
-                        let source_type_id = if let Some(t) = map.get(&source_type_id) {
-                            need_copy = true;
-                            *t
-                        } else {
-                            source_type_id
-                        };
+                        if let Some((source_type_id, file_type_id, trans_type_id)) =
+                            cached_func(source_type_id, file_type_id, trans_type_id)
+                        {
+                            if self.get_type(source_type_id).is_none() {
+                                panic!("{source_type_id:?} out of bounds");
+                            } else if self.get_type(file_type_id).is_none() {
+                                panic!("{file_type_id:?} out of bounds");
+                            } else if self.get_type(trans_type_id).is_none() {
+                                panic!("{trans_type_id:?} out of bounds");
+                            }
 
-                        if need_copy {
                             to_add.push((
                                 source_type_id,
                                 file_type_id,

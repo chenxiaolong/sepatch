@@ -1,3 +1,7 @@
+### Version 0.6.0
+
+* Switch back to using fn parameter for `copy_avtab_rules()` and `copy_filename_trans_rules()`
+
 ### Version 0.5.0
 
 * Add support for copying type transition rules
